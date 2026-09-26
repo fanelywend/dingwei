@@ -146,12 +146,28 @@ cd /home/orlando/dingwei
    - `reports` —— 单元测试与 lint 报告
 5. 也可在 Actions 页点 **Run workflow** 手动触发构建。
 
-> **不开网页也能确认 CI 状态**：构建成功时 CI 会自动打一个 `ci-ok` 标签指向该提交，
-> 因此命令行即可确认（失败时标签不会移动）：
+> **不开网页也能确认 CI 状态**：CI 会自己把结果写回仓库，命令行即可查（无需 token）：
 >
 > ```bash
-> git fetch --tags && git log -1 --oneline ci-ok
+> # 成功：ci-ok 指向构建成功的那次提交（失败时不会移动）
+> git fetch --tags -f && git log -1 --oneline ci-ok
+>
+> # 失败：ci-logs 分支里有失败报告（含各步骤结果与日志尾部）
+> git fetch origin ci-logs -f && git show origin/ci-logs:ci-logs/last-failure.md
 > ```
+>
+> `last-failure.md` 会列出**每一步的 outcome**，能直接看出是哪一步挂了。
+
+### 修改本项目时的两个坑（都踩过）
+
+1. **不要把机器相关路径写进仓库里的配置文件**。
+   `gradle.properties` 会提交到仓库，曾因写入 `org.gradle.java.home=/home/orlando/jdk17`
+   导致 CI 上 Gradle 直接启动失败（runner 无此路径）。机器相关配置请放：
+   - JDK → 用户级 `~/.gradle/gradle.properties` 的 `org.gradle.java.home`
+   - Android SDK → `local.properties` 的 `sdk.dir`（已 gitignore）
+2. **本机 `./gradlew` 不能用**：wrapper launcher 需要 `JAVA_HOME`，且其
+   `distributionUrl` 指向 `services.gradle.org`（本机不可达）。本机构建请用 `./build.sh`
+   （走项目内 `.tools/gradle-8.9`）。CI 上则正常使用 `./gradlew`。
 
 **让 CI 产出「已签名」的 release APK（可选，但建议）**
 
