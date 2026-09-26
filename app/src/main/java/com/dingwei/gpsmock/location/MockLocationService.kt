@@ -143,7 +143,7 @@ class MockLocationService : LifecycleService() {
                 pushOnce()
                 // 每 10 秒重新启用一次测试 provider：部分 ROM 会在系统定位开关或
                 // 省电策略介入后把它静默关掉，导致位置不再分发。
-                if (tick % 10 == 0) engine.reassertEnabled()
+                if (tick % 10 == 0) engine.reassertMock()
                 // 每 5 秒读回校验一次：确认系统拿到的确实是我们的坐标。
                 // 这是唯一能发现「静默失效」的手段。
                 if (tick % 5 == 0 && tick > 0) verifyInjection()

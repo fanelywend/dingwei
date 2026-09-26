@@ -182,16 +182,28 @@ class MockLocationEngine(private val context: Context) {
     /**
      * 周期性重新启用测试 provider。
      *
-     * 部分 ROM 会在系统定位开关切换、省电策略介入后把测试 provider 关掉，
-     * 此时位置就不再被分发。重写位置前重新启用一次成本极低，可避免这种静默失效。
+     * 部分 ROM 会在系统定位开关切换、联网、省电策略介入后把测试 provider 关掉，
+     * 甚至让真实的 network/fused provider 重新接管，此时位置就不再被分发。
+     *
+     * 这里**重新 addTestProvider**（而不是只调用 setTestProviderEnabled）：
+     * 若 mock 已被真实 provider 顶掉，只有重新 add 才能夺回接管权。
+     * 刻意不先 removeTestProvider——那会让真实 provider 短暂暴露给正在读定位的 App。
      */
-    fun reassertEnabled() {
-        registered.forEach { name ->
+    @SuppressLint("WrongConstant")
+    fun reassertMock() {
+        targetProviders().forEach { name ->
             try {
+                lm.addTestProvider(
+                    name,
+                    false, true, false, false, true, true, true,
+                    Criteria.POWER_LOW,
+                    Criteria.ACCURACY_FINE
+                )
                 @Suppress("DEPRECATION")
                 lm.setTestProviderEnabled(name, true)
+                registered += name
             } catch (t: Throwable) {
-                Log.w(TAG, "重新启用 $name 失败", t)
+                Log.w(TAG, "重新接管 $name 失败", t)
             }
         }
     }
