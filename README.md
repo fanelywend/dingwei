@@ -146,6 +146,13 @@ cd /home/orlando/dingwei
    - `reports` —— 单元测试与 lint 报告
 5. 也可在 Actions 页点 **Run workflow** 手动触发构建。
 
+> **不开网页也能确认 CI 状态**：构建成功时 CI 会自动打一个 `ci-ok` 标签指向该提交，
+> 因此命令行即可确认（失败时标签不会移动）：
+>
+> ```bash
+> git fetch --tags && git log -1 --oneline ci-ok
+> ```
+
 **让 CI 产出「已签名」的 release APK（可选，但建议）**
 
 仓库未配置密钥时，CI 产出的 release APK 是**未签名**的（无法直接安装，debug APK 仍可装）。

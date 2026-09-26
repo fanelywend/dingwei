@@ -18,6 +18,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
+    # 需要写权限来推送 ci-ok 标记标签（见最后一步）
+    permissions:
+      contents: write
+
     env:
       # GitHub runner 在海外：改用官方 Maven 源（本地的阿里云镜像反而慢）
       GRADLE_USE_MIRRORS: 'false'
@@ -92,3 +96,15 @@ jobs:
             app/build/reports/tests/
             app/build/reports/lint-results-debug.html
           if-no-files-found: ignore
+
+      # 打一个 ci-ok 标签指向本次成功构建的提交。
+      # 作用：无需 GitHub token，直接 `git ls-remote --tags origin ci-ok`
+      # 就能确认 CI 是否真的构建成功（失败时该标签不会移动）。
+      - name: 标记本次构建成功
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f ci-ok "$GITHUB_SHA"
+          git push -f origin "refs/tags/ci-ok"
+          echo "✅ 已标记 ci-ok -> $GITHUB_SHA"
