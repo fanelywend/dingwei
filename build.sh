@@ -18,6 +18,11 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GRADLE_BIN="$PROJECT_DIR/.tools/gradle-8.9/bin/gradle"
 
 if [[ ! -x "$GRADLE_BIN" ]]; then
+  # 没有项目内 Gradle 时退回 wrapper（./gradlew 需能访问 services.gradle.org）
+  if [[ -x "$PROJECT_DIR/gradlew" ]]; then
+    echo "提示：未找到 $GRADLE_BIN，改用 ./gradlew（需能访问 services.gradle.org）" >&2
+    exec "$PROJECT_DIR/gradlew" "$@"
+  fi
   echo "找不到 Gradle：$GRADLE_BIN" >&2
   echo "下载方式：curl -fL -o /tmp/gradle.zip https://mirrors.cloud.tencent.com/gradle/gradle-8.9-bin.zip" >&2
   echo "         unzip -q /tmp/gradle.zip -d $PROJECT_DIR/.tools/" >&2

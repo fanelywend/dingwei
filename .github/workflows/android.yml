@@ -1,6 +1,6 @@
 name: Android 构建
 
-# 推送到 main、提交 PR，或在 Actions 页面手动触发
+# 推送到 main、提交 PR、打 v* 标签，或在 Actions 页面手动触发
 on:
   push:
     branches: [ main ]
@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
-    # 需要写权限来推送 ci-ok 标记标签（见最后一步）
+    # 需要写权限来推送 ci-ok / ci-logs 分支
     permissions:
       contents: write
 
@@ -27,6 +27,9 @@ jobs:
       GRADLE_USE_MIRRORS: 'false'
       # 是否已配置签名密钥（决定 release APK 能否签名）
       HAS_KEYSTORE: ${{ secrets.KEYSTORE_BASE64 != '' }}
+      # 汇总构建日志，失败时随 ci-logs 分支推送出去，便于离线排查。
+      # 用固定路径：job 级 env 里 `runner` 上下文未必可用，而 RUNNER_TEMP 环境变量总是存在。
+      BUILD_LOG: /tmp/ci-build.log
 
     steps:
       - name: 检出代码
@@ -43,6 +46,16 @@ jobs:
 
       - name: 配置 Gradle（含依赖缓存）
         uses: gradle/actions/setup-gradle@v4
+
+      - name: 环境诊断
+        run: |
+          set -x
+          java -version
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          ls "$ANDROID_HOME/platforms" 2>/dev/null || true
+          ls "$ANDROID_HOME/build-tools" 2>/dev/null || true
+          ./gradlew --version
 
       # 把 keystore 以 base64 存进仓库 Secret，避免把签名密钥提交进仓库。
       # 需要 4 个 Secret：KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD
@@ -70,13 +83,19 @@ jobs:
           echo "本次仍会产出可直接安装的 debug APK。"
 
       - name: 单元测试
-        run: ./gradlew testDebugUnitTest --stacktrace
+        run: |
+          set -o pipefail
+          ./gradlew testDebugUnitTest --stacktrace 2>&1 | tee -a "$BUILD_LOG"
 
       - name: Lint 检查
-        run: ./gradlew lintDebug --stacktrace
+        run: |
+          set -o pipefail
+          ./gradlew lintDebug --stacktrace 2>&1 | tee -a "$BUILD_LOG"
 
       - name: 构建 APK
-        run: ./gradlew assembleDebug assembleRelease --stacktrace
+        run: |
+          set -o pipefail
+          ./gradlew assembleDebug assembleRelease --stacktrace 2>&1 | tee -a "$BUILD_LOG"
 
       - name: 上传 APK
         uses: actions/upload-artifact@v4
@@ -96,6 +115,41 @@ jobs:
             app/build/reports/tests/
             app/build/reports/lint-results-debug.html
           if-no-files-found: ignore
+
+      # 失败时把日志推到 ci-logs 分支：这样无需 GitHub token，
+      # 直接 `git fetch origin ci-logs && git show origin/ci-logs:ci-logs/last-failure.md`
+      # 就能看到失败原因。
+      - name: 失败时推送日志到 ci-logs 分支
+        if: failure()
+        run: |
+          {
+            echo "# CI 构建失败"
+            echo
+            echo "- 提交：\`$GITHUB_SHA\`"
+            echo "- 运行：$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo
+            echo "## 环境"
+            echo '```'
+            java -version 2>&1 | head -3
+            echo "ANDROID_HOME=$ANDROID_HOME"
+            echo '```'
+            echo
+            echo "## 构建日志（最后 500 行）"
+            echo '```'
+            tail -500 "$BUILD_LOG" 2>/dev/null || echo "(无日志)"
+            echo '```'
+          } > "$RUNNER_TEMP/last-failure.md"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B ci-logs
+          mkdir -p ci-logs
+          cp "$RUNNER_TEMP/last-failure.md" ci-logs/last-failure.md
+          cp "$BUILD_LOG" ci-logs/build.log 2>/dev/null || true
+          git add -f ci-logs
+          git commit -m "CI 失败日志（$GITHUB_SHA）" || echo "无变更可提交"
+          git push -f origin ci-logs
+          echo "已推送失败日志到 ci-logs 分支"
 
       # 打一个 ci-ok 标签指向本次成功构建的提交。
       # 作用：无需 GitHub token，直接 `git ls-remote --tags origin ci-ok`
