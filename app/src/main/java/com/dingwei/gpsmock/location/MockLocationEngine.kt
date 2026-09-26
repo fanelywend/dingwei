@@ -73,6 +73,20 @@ class MockLocationEngine(private val context: Context) {
     fun isSelectedAsMockApp(): Boolean = appOpsMode() == AppOpsManager.MODE_ALLOWED
 
     /**
+     * 需要模拟的 provider 列表。
+     *
+     * 取平台**实际暴露的全部 provider**（`allProviders`），而不是只写死 gps/network/fused：
+     * 各厂商 ROM 会注册额外 provider，只盯三个常见名字会漏掉它们。
+     * 排除 `passive`（它不是可请求的 provider，而是被动接收其他 provider 的位置）。
+     */
+    fun targetProviders(): List<String> {
+        val fromSystem = runCatching { lm.allProviders }.getOrNull().orEmpty()
+        return (fromSystem + CORE_TARGETS)
+            .filter { it.isNotBlank() && it != LocationManager.PASSIVE_PROVIDER }
+            .distinct()
+    }
+
+    /**
      * 注册测试 provider。
      * @return 至少注册成功一个 provider 时返回 true。
      */
@@ -84,7 +98,7 @@ class MockLocationEngine(private val context: Context) {
         cleanup()
         lastError = null
         registrationErrors.clear()
-        TARGETS.forEach { name ->
+        targetProviders().forEach { name ->
             try {
                 lm.addTestProvider(
                     name,
@@ -195,7 +209,7 @@ class MockLocationEngine(private val context: Context) {
             context, Manifest.permission.ACCESS_COARSE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
 
-        return TARGETS.map { name ->
+        return targetProviders().map { name ->
             var error: String? = null
             var enabled = false
             var last: Location? = null
@@ -265,6 +279,7 @@ class MockLocationEngine(private val context: Context) {
         const val NETWORK_PROVIDER = LocationManager.NETWORK_PROVIDER
         const val FUSED_PROVIDER = "fused"
 
-        val TARGETS = listOf(GPS_PROVIDER, NETWORK_PROVIDER, FUSED_PROVIDER)
+        /** 无论如何都要模拟的三个核心 provider（其余由 [targetProviders] 从平台枚举）。 */
+        val CORE_TARGETS = listOf(GPS_PROVIDER, NETWORK_PROVIDER, FUSED_PROVIDER)
     }
 }

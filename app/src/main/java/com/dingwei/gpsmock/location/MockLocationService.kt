@@ -4,9 +4,14 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.location.LocationManager
+import android.net.ConnectivityManager
+import android.net.Network
 import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -34,11 +39,64 @@ class MockLocationService : LifecycleService() {
 
     private lateinit var engine: MockLocationEngine
     private var tickJob: Job? = null
+    private var reregisterJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
         engine = MockLocationEngine(this)
         createChannel()
+
+        // 网络可用性 / 系统定位开关发生变化时重新注册测试 provider。
+        // 动机：实测反馈「一开 WiFi 或移动数据，模拟定位就失效」——这类失效很可能是
+        // 真实 network provider 上线后把我们的 mock 顶掉了。监听这些变化并立即重新接管，
+        // 是最直接的应对。
+        runCatching {
+            getSystemService(ConnectivityManager::class.java)
+                ?.registerDefaultNetworkCallback(networkCallback)
+        }.onFailure { Log.w(TAG, "注册网络回调失败", it) }
+
+        runCatching {
+            ContextCompat.registerReceiver(
+                this,
+                locationModeReceiver,
+                IntentFilter(LocationManager.MODE_CHANGED_ACTION),
+                ContextCompat.RECEIVER_NOT_EXPORTED
+            )
+        }.onFailure { Log.w(TAG, "注册定位开关广播失败", it) }
+    }
+
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) = scheduleReregister("网络已连接")
+
+        override fun onLost(network: Network) = scheduleReregister("网络已断开")
+    }
+
+    private val locationModeReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) =
+            scheduleReregister("系统定位开关变化")
+    }
+
+    /** 稍作延迟后重新注册，避免网络状态抖动时频繁重注册。 */
+    private fun scheduleReregister(reason: String) {
+        if (!MockState.running.value) return
+        if (reregisterJob?.isActive == true) return
+        reregisterJob = lifecycleScope.launch {
+            delay(REREGISTER_DELAY_MS)
+            reregister(reason)
+        }
+    }
+
+    private fun reregister(reason: String) {
+        if (!MockState.running.value) return
+        Log.i(TAG, "重新注册测试 provider（$reason）")
+        if (!engine.start()) {
+            MockState.error.value = "重新注册失败（$reason）：模拟定位可能已失效"
+            return
+        }
+        MockState.providers.value = engine.registeredProviders
+        MockState.error.value = null
+        // 立刻写一次，避免出现「刚重新注册但位置还是旧的」的空窗
+        pushOnce()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -145,6 +203,12 @@ class MockLocationService : LifecycleService() {
 
     override fun onDestroy() {
         tickJob?.cancel()
+        reregisterJob?.cancel()
+        runCatching {
+            getSystemService(ConnectivityManager::class.java)
+                ?.unregisterNetworkCallback(networkCallback)
+        }
+        runCatching { unregisterReceiver(locationModeReceiver) }
         engine.stop()
         MockState.running.value = false
         MockState.providers.value = emptySet()
@@ -232,6 +296,9 @@ class MockLocationService : LifecycleService() {
         private const val CHANNEL_ID = "mock_location"
         private const val NOTIFICATION_ID = 0x1001
         private const val TICK_MS = 1000L
+
+        /** 网络/定位状态变化后，延迟这么久再重新注册（等系统状态稳定）。 */
+        private const val REREGISTER_DELAY_MS = 1200L
 
         const val ACTION_START = "com.dingwei.gpsmock.action.START"
         const val ACTION_STOP = "com.dingwei.gpsmock.action.STOP"
