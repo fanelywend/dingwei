@@ -16,17 +16,18 @@ import android.util.Log
  * 原理：
  * 1. [LocationManager.addTestProvider] 注册一个测试用的 provider；
  * 2. [LocationManager.setTestProviderLocation] 把伪造的 [Location] 灌进去；
- * 3. 系统定位框架会把该位置分发给所有读取定位的 App（含 Google Play 服务融合定位）。
+ * 3. 系统定位框架会把该位置分发给所有读取定位的 App（含融合定位）。
  *
  * 前提：用户在 **开发者选项 → 选择模拟位置信息应用** 中选中本 App。
- * 未选中时 [addTestProvider] 会抛 [SecurityException]，[isSelectedAsMockApp] 会返回 false。
+ * 未选中时 [addTestProvider] 会抛 [SecurityException]。
  *
- * 同时模拟 gps / network / fused 三个 provider，兼容只读融合定位的 App。
- * 注：若设备上已存在真实的 fused provider（带 Play 服务的机型常见），
- * 注册会失败而被跳过，此时 gps + network 的伪造位置仍会进入融合定位。
+ * 同时模拟 gps / network / fused 三个 provider。注：若设备上已存在真实的 fused provider
+ * （带 Google 服务的机型常见），注册会失败而被跳过，此时 gps + network 的伪造位置
+ * 通常仍会进入融合定位。
  *
- * 已知限制：系统会在位置上打 `isMock` 标记，部分 App（银行、部分游戏反作弊）
- * 可据此检测到模拟定位——这不是本 App 能绕过的，绕过需要 root / Xposed。
+ * 已知限制：系统会在位置上打 mock 标记，部分 App 可据此检测到模拟定位；
+ * 另有部分 App 根本不用系统定位（自带 WiFi/基站定位），这种情况无法通过本方式影响。
+ * 用 [probe] 可以区分这两类情况。
  */
 class MockLocationEngine(private val context: Context) {
 
@@ -35,44 +36,53 @@ class MockLocationEngine(private val context: Context) {
     /** 实际注册成功的 provider 名集合。 */
     private val registered = mutableSetOf<String>()
 
-    /** 上一次注册失败的原因，供 UI 提示。 */
+    /** 各 provider 注册失败的原因。 */
+    private val registrationErrors = mutableMapOf<String, String>()
+
+    /** 上一次注册的整体失败原因，供 UI 提示。 */
     @Volatile
     var lastError: String? = null
         private set
 
+    /** 最近一次写入的失败详情（provider → 错误），空表示全部成功。 */
+    @Volatile
+    var lastPushFailures: Map<String, String> = emptyMap()
+        private set
+
     val registeredProviders: Set<String> get() = registered.toSet()
 
-    /** 本 App 是否已被选为「模拟位置信息应用」。 */
-    fun isSelectedAsMockApp(): Boolean = try {
+    /** AppOps 的原始模式值（能区分「未授权」与其他异常）。 */
+    fun appOpsMode(): Int = try {
         val ops = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
         val uid = android.os.Process.myUid()
-        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             ops.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_MOCK_LOCATION, uid, context.packageName)
         } else {
             @Suppress("DEPRECATION")
             ops.checkOpNoThrow(AppOpsManager.OPSTR_MOCK_LOCATION, uid, context.packageName)
         }
-        mode == AppOpsManager.MODE_ALLOWED
     } catch (t: Throwable) {
         Log.w(TAG, "查询模拟位置授权失败", t)
-        false
+        -1
     }
+
+    /** 本 App 是否已被选为「模拟位置信息应用」。 */
+    fun isSelectedAsMockApp(): Boolean = appOpsMode() == AppOpsManager.MODE_ALLOWED
 
     /**
      * 注册测试 provider。
      * @return 至少注册成功一个 provider 时返回 true。
      */
-    // lint 的 WrongConstant 是针对 API 31+ 新签名（ProviderProperties.POWER_USAGE_*）的检查。
+    // lint 的 WrongConstant 针对 API 31+ 新签名（ProviderProperties.POWER_USAGE_*）。
     // 这里刻意使用已废弃但**全 API 级别（24+）可用**的旧重载，其 powerRequirement 参数
-    // 按文档应传 Criteria.POWER_*；且两套常量数值相同（POWER_LOW == POWER_USAGE_LOW == 1），
-    // 不存在语义差异，故精确豁免该检查。
+    // 按文档应传 Criteria.POWER_*；两套常量数值相同（POWER_LOW == POWER_USAGE_LOW == 1）。
     @SuppressLint("WrongConstant")
     fun start(): Boolean {
         cleanup()
         lastError = null
+        registrationErrors.clear()
         TARGETS.forEach { name ->
             try {
-                @Suppress("DEPRECATION")
                 lm.addTestProvider(
                     name,
                     false,  // requiresNetwork
@@ -89,13 +99,15 @@ class MockLocationEngine(private val context: Context) {
                 lm.setTestProviderEnabled(name, true)
                 registered += name
             } catch (e: SecurityException) {
-                // 未在开发者选项里把本 App 选为模拟位置应用
+                registrationErrors[name] = "无模拟位置权限（未在开发者选项中选中本应用）"
                 lastError = "未获得模拟位置权限：请在开发者选项中选择本应用"
                 Log.w(TAG, "注册 $name 失败（无权限）", e)
             } catch (e: IllegalArgumentException) {
                 // provider 已存在（多为真实 fused provider）：跳过，不影响其余 provider
+                registrationErrors[name] = "provider 已存在（${e.message}）"
                 Log.i(TAG, "provider $name 已存在，跳过：${e.message}")
             } catch (t: Throwable) {
+                registrationErrors[name] = "${t.javaClass.simpleName}: ${t.message}"
                 lastError = t.message ?: t.javaClass.simpleName
                 Log.w(TAG, "注册 $name 失败", t)
             }
@@ -119,7 +131,9 @@ class MockLocationEngine(private val context: Context) {
         if (registered.isEmpty()) return false
         val nowMs = System.currentTimeMillis()
         val nowElapsed = SystemClock.elapsedRealtimeNanos()
+        val failures = mutableMapOf<String, String>()
         var anyOk = false
+
         registered.forEach { name ->
             try {
                 val loc = Location(name).apply {
@@ -140,10 +154,68 @@ class MockLocationEngine(private val context: Context) {
                 lm.setTestProviderLocation(name, loc)
                 anyOk = true
             } catch (t: Throwable) {
+                failures[name] = "${t.javaClass.simpleName}: ${t.message}"
                 Log.w(TAG, "写入 $name 失败", t)
             }
         }
+        lastPushFailures = failures
         return anyOk
+    }
+
+    /**
+     * 周期性重新启用测试 provider。
+     *
+     * 部分 ROM 会在系统定位开关切换、省电策略介入后把测试 provider 关掉，
+     * 此时位置就不再被分发。重写位置前重新启用一次成本极低，可避免这种静默失效。
+     */
+    fun reassertEnabled() {
+        registered.forEach { name ->
+            try {
+                @Suppress("DEPRECATION")
+                lm.setTestProviderEnabled(name, true)
+            } catch (t: Throwable) {
+                Log.w(TAG, "重新启用 $name 失败", t)
+            }
+        }
+    }
+
+    /**
+     * 读回平台当前各 provider 的位置，用于判断注入是否真的生效。
+     * @param registeredNames 已注册的 provider 名（由服务写入 [MockState]，跨实例共享）
+     */
+    fun probe(registeredNames: Set<String>): List<ProviderProbe> = TARGETS.map { name ->
+        var error: String? = null
+        var enabled = false
+        var last: Location? = null
+
+        try {
+            enabled = lm.isProviderEnabled(name)
+        } catch (t: Throwable) {
+            error = "isProviderEnabled 失败: ${t.message}"
+        }
+        try {
+            last = lm.getLastKnownLocation(name)
+        } catch (t: Throwable) {
+            error = listOfNotNull(error, "getLastKnownLocation 失败: ${t.message}").joinToString("; ")
+        }
+
+        ProviderProbe(
+            name = name,
+            registered = registeredNames.contains(name),
+            enabled = enabled,
+            error = error ?: registrationErrors[name],
+            lat = last?.latitude,
+            lon = last?.longitude,
+            isMock = last?.let { location ->
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    location.isMock
+                } else {
+                    @Suppress("DEPRECATION")
+                    location.isFromMockProvider
+                }
+            },
+            ageMs = last?.let { (SystemClock.elapsedRealtimeNanos() - it.elapsedRealtimeNanos) / 1_000_000 }
+        )
     }
 
     /** 注销所有测试 provider，位置恢复为真实定位。 */
@@ -162,6 +234,7 @@ class MockLocationEngine(private val context: Context) {
             }
         }
         registered.clear()
+        lastPushFailures = emptyMap()
     }
 
     companion object {

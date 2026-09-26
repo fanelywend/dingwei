@@ -23,6 +23,9 @@ object MockState {
     /** 最近一次成功写入系统的时间戳（毫秒），0 表示尚未成功。 */
     val lastPushAt = MutableStateFlow(0L)
 
+    /** 最近一次写入的失败详情（provider → 错误），空表示全部成功。 */
+    val pushFailures = MutableStateFlow<Map<String, String>>(emptyMap())
+
     /** 错误信息，供 UI 提示。 */
     val error = MutableStateFlow<String?>(null)
 }

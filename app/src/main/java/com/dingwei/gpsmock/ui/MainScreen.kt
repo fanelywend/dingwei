@@ -68,6 +68,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.dingwei.gpsmock.data.Favorite
 import com.dingwei.gpsmock.data.LatLon
 import com.dingwei.gpsmock.geo.CoordinateSystem
+import com.dingwei.gpsmock.location.DiagnosticsSnapshot
+import com.dingwei.gpsmock.location.GpsDiagnostics
+import com.dingwei.gpsmock.location.InjectionVerdict
 import com.dingwei.gpsmock.location.MockState
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -116,6 +119,14 @@ fun MainScreen(vm: MockViewModel) {
         }
     }
 
+    // 自检数据定期自动刷新，这样界面上的「读回值」始终是最新的
+    LaunchedEffect(Unit) {
+        while (true) {
+            vm.refreshDiagnostics()
+            kotlinx.coroutines.delay(2000)
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -160,6 +171,16 @@ fun MainScreen(vm: MockViewModel) {
                 onRefresh = {
                     vm.refreshAuthorization()
                     permissionGranted = hasLocationPermission(context)
+                }
+            )
+
+            DiagnosticsCard(
+                snapshot = vm.diagnostics,
+                onRefresh = { vm.refreshDiagnostics() },
+                onCopy = {
+                    val report = vm.diagnosticsReport()
+                    clipboard.setText(AnnotatedString(report))
+                    vm.notify("自检报告已复制到剪贴板")
                 }
             )
 
@@ -304,6 +325,152 @@ private fun StatusCard(
                 )
             }
         }
+    }
+}
+
+// ── 自检 / 诊断卡 ───────────────────────────────────────────────────────────
+
+/**
+ * 读回平台当前的位置，判断模拟到底有没有写进定位框架。
+ *
+ * 这是排查「开了模拟定位但其他 App 仍显示真实位置」的关键：
+ * 若读回值 = 目标坐标，说明注入成功，问题在消费方 App；
+ * 若读回值仍是真实位置，说明注入没生效。
+ */
+@Composable
+private fun DiagnosticsCard(
+    snapshot: DiagnosticsSnapshot?,
+    onRefresh: () -> Unit,
+    onCopy: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "自检 / 诊断",
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = onRefresh) { Text("刷新") }
+                TextButton(onClick = onCopy) { Text("复制报告") }
+            }
+
+            if (snapshot == null) {
+                Text(
+                    text = "正在采集…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                return@Column
+            }
+
+            val verdictColor = when (snapshot.verdict) {
+                InjectionVerdict.INJECTION_OK -> MaterialTheme.colorScheme.primary
+                InjectionVerdict.INJECTION_FAILED -> MaterialTheme.colorScheme.error
+                InjectionVerdict.NO_DATA -> MaterialTheme.colorScheme.onSurfaceVariant
+            }
+            Text(
+                text = GpsDiagnostics.verdictText(snapshot.verdict),
+                style = MaterialTheme.typography.bodySmall,
+                color = verdictColor
+            )
+
+            HorizontalDivider(Modifier.padding(vertical = 2.dp))
+
+            InfoRow("Android", "${snapshot.androidRelease} (API ${snapshot.sdkInt})")
+            InfoRow(
+                "模拟位置授权",
+                if (snapshot.isMockAppSelected) "已授权" else "未授权 · ${snapshot.appOpsModeName}"
+            )
+            InfoRow("前台服务", if (snapshot.serviceRunning) "运行中" else "未运行")
+            InfoRow(
+                "最近写入",
+                when {
+                    snapshot.lastPushAgeMs == null -> "从未写入"
+                    snapshot.pushedRecently -> "${GpsDiagnostics.formatAge(snapshot.lastPushAgeMs)}前（正常）"
+                    else -> "${GpsDiagnostics.formatAge(snapshot.lastPushAgeMs)}前（偏旧）"
+                }
+            )
+
+            HorizontalDivider(Modifier.padding(vertical = 2.dp))
+            Text(
+                text = "平台读回值（应等于目标 ${"%.5f, %.5f".format(snapshot.targetLat, snapshot.targetLon)}）",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            snapshot.probes.forEach { probe ->
+                Column {
+                    val distance = probe.distanceTo(snapshot.targetLat, snapshot.targetLon)
+                    Text(
+                        text = buildString {
+                            append("[${probe.name}] ")
+                            append(if (probe.registered) "已注册" else "未注册")
+                            append(" · ")
+                            append(if (probe.enabled) "启用" else "停用")
+                            probe.isMock?.let {
+                                append(" · isMock=")
+                                append(it)
+                            }
+                            if (distance != null) {
+                                append(" · 偏差 %.0fm".format(distance))
+                            }
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Text(
+                        text = "   读回 ${GpsDiagnostics.formatCoord(probe.lat, probe.lon)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    probe.error?.let {
+                        Text(
+                            text = "   错误: $it",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            }
+
+            if (snapshot.pushFailures.isNotEmpty()) {
+                HorizontalDivider(Modifier.padding(vertical = 2.dp))
+                Text(
+                    text = "写入失败详情",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+                snapshot.pushFailures.forEach { (provider, err) ->
+                    Text(
+                        text = "[$provider] $err",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun InfoRow(label: String, value: String) {
+    Row(Modifier.fillMaxWidth()) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(96.dp)
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.weight(1f)
+        )
     }
 }
 

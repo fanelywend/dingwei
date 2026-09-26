@@ -54,18 +54,22 @@ class MockLocationService : LifecycleService() {
     private fun startMocking() {
         if (tickJob?.isActive == true) return
 
-        // 前台服务必须在启动后 5 秒内调用 startForeground
-        if (!startForegroundCompat()) {
-            MockState.error.value = "前台服务启动失败：请确认已授予定位权限"
+        // 先注册 provider，再发前台通知。
+        // 顺序很重要：反过来的话，注册失败时通知已经发出去了，
+        // 用户会看到「正在模拟定位」却什么都没发生（Android 12+ 的
+        // addTestProvider 在 AppOps 未通过时是静默 return，失败毫无提示）。
+        if (!engine.start()) {
+            MockState.error.value = engine.lastError
+                ?: "无法注册模拟位置 provider，请检查开发者选项设置"
             MockState.running.value = false
             stopSelf()
             return
         }
 
-        if (!engine.start()) {
-            MockState.error.value = engine.lastError
-                ?: "无法注册模拟位置 provider，请检查开发者选项设置"
+        if (!startForegroundCompat()) {
+            MockState.error.value = "前台服务启动失败：请确认已授予定位权限"
             MockState.running.value = false
+            engine.stop()
             stopSelf()
             return
         }
@@ -79,6 +83,12 @@ class MockLocationService : LifecycleService() {
             var tick = 0
             while (isActive) {
                 pushOnce()
+                // 每 10 秒重新启用一次测试 provider：部分 ROM 会在系统定位开关或
+                // 省电策略介入后把它静默关掉，导致位置不再分发。
+                if (tick % 10 == 0) engine.reassertEnabled()
+                // 每 5 秒读回校验一次：确认系统拿到的确实是我们的坐标。
+                // 这是唯一能发现「静默失效」的手段。
+                if (tick % 5 == 0 && tick > 0) verifyInjection()
                 // 通知栏每 5 秒刷新一次即可，避免过于频繁
                 if (tick % 5 == 0) updateNotification()
                 tick++
@@ -102,6 +112,22 @@ class MockLocationService : LifecycleService() {
         } else {
             MockState.error.value = "位置写入失败，模拟定位可能已失效"
         }
+        MockState.pushFailures.value = engine.lastPushFailures
+    }
+
+    /**
+     * 读回校验：若平台给的位置始终不是我们的目标坐标，说明注入并未真正生效。
+     * 这种情况下把错误显示出来，而不是让用户以为一切正常。
+     */
+    private fun verifyInjection() {
+        val p = MockState.params.value
+        val probes = engine.probe(engine.registeredProviders)
+        val hit = probes.any { it.matches(p.lat, p.lon) }
+        MockState.error.value = when {
+            hit -> null
+            probes.all { it.lat == null } -> "注入状态未知：读不到任何 provider 的位置数据"
+            else -> "注入未生效：系统读回的不是目标坐标，详情见「自检 / 诊断」"
+        }
     }
 
     private fun stopMocking() {
@@ -111,6 +137,7 @@ class MockLocationService : LifecycleService() {
         MockState.running.value = false
         MockState.providers.value = emptySet()
         MockState.lastPushAt.value = 0L
+        MockState.pushFailures.value = emptyMap()
         Log.i(TAG, "已停止模拟定位")
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -121,6 +148,10 @@ class MockLocationService : LifecycleService() {
         engine.stop()
         MockState.running.value = false
         MockState.providers.value = emptySet()
+        MockState.pushFailures.value = emptyMap()
+        // 任何退出路径都要撤掉通知：否则注册失败时残留的「正在模拟定位」
+        // 会让用户以为模拟还在生效。
+        runCatching { ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE) }
         super.onDestroy()
     }
 

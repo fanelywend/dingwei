@@ -1,6 +1,8 @@
 package com.dingwei.gpsmock.ui
 
+import android.app.AppOpsManager
 import android.app.Application
+import android.os.Build
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -13,6 +15,8 @@ import com.dingwei.gpsmock.data.OnlineGeocoder
 import com.dingwei.gpsmock.data.PlaceResult
 import com.dingwei.gpsmock.data.PrefsStore
 import com.dingwei.gpsmock.geo.CoordinateSystem
+import com.dingwei.gpsmock.location.DiagnosticsSnapshot
+import com.dingwei.gpsmock.location.GpsDiagnostics
 import com.dingwei.gpsmock.location.MockLocationEngine
 import com.dingwei.gpsmock.location.MockLocationService
 import com.dingwei.gpsmock.location.MockState
@@ -71,6 +75,10 @@ class MockViewModel(application: Application) : AndroidViewModel(application) {
     var message by mutableStateOf<String?>(null)
         private set
 
+    /** 自检快照（用于判断注入是否真的生效） */
+    var diagnostics by mutableStateOf<DiagnosticsSnapshot?>(null)
+        private set
+
     private var searchJob: Job? = null
 
     init {
@@ -82,6 +90,7 @@ class MockViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         refreshAuthorization()
+        refreshDiagnostics()
     }
 
     fun consumeMessage() {
@@ -92,6 +101,36 @@ class MockViewModel(application: Application) : AndroidViewModel(application) {
     fun notify(text: String) {
         message = text
     }
+
+    /**
+     * 采集一次自检数据：读回平台各 provider 当前的坐标，
+     * 与目标坐标比对即可判断模拟是否真的写进了定位框架。
+     */
+    fun refreshDiagnostics() {
+        val mode = engine.appOpsMode()
+        val lastPushAt = MockState.lastPushAt.value
+        val now = System.currentTimeMillis()
+        diagnostics = DiagnosticsSnapshot(
+            sdkInt = Build.VERSION.SDK_INT,
+            androidRelease = Build.VERSION.RELEASE ?: "?",
+            packageName = getApplication<Application>().packageName,
+            appOpsMode = mode,
+            appOpsModeName = GpsDiagnostics.appOpsModeName(mode),
+            isMockAppSelected = mode == AppOpsManager.MODE_ALLOWED,
+            targetLat = params.lat,
+            targetLon = params.lon,
+            pushedRecently = lastPushAt > 0 && now - lastPushAt < 5000,
+            lastPushAgeMs = if (lastPushAt > 0) now - lastPushAt else null,
+            serviceRunning = MockState.running.value,
+            probes = engine.probe(MockState.providers.value),
+            pushFailures = MockState.pushFailures.value
+        )
+    }
+
+    /** 可复制发走的诊断报告文本。 */
+    fun diagnosticsReport(): String =
+        diagnostics?.let { GpsDiagnostics.buildReport(it) }
+            ?: "（尚未采集，请点「刷新自检」）"
 
     /** 重新检查「模拟位置信息应用」授权（从设置页返回时调用）。 */
     fun refreshAuthorization() {
