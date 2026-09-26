@@ -1,14 +1,17 @@
 package com.dingwei.gpsmock.location
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.app.AppOpsManager
 import android.content.Context
+import android.content.pm.PackageManager
 import android.location.Criteria
 import android.location.Location
 import android.location.LocationManager
 import android.os.Build
 import android.os.SystemClock
 import android.util.Log
+import androidx.core.content.ContextCompat
 
 /**
  * 模拟定位引擎——通过 Android 官方「测试 provider」机制写入伪造位置，**无需 root**。
@@ -183,39 +186,57 @@ class MockLocationEngine(private val context: Context) {
      * 读回平台当前各 provider 的位置，用于判断注入是否真的生效。
      * @param registeredNames 已注册的 provider 名（由服务写入 [MockState]，跨实例共享）
      */
-    fun probe(registeredNames: Set<String>): List<ProviderProbe> = TARGETS.map { name ->
-        var error: String? = null
-        var enabled = false
-        var last: Location? = null
+    fun probe(registeredNames: Set<String>): List<ProviderProbe> {
+        // 读取定位需要定位权限；没有权限时探测本身没有意义，直接说明原因，
+        // 同时也满足 lint 对「显式检查权限」的要求。
+        val hasPermission = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED || ContextCompat.checkSelfPermission(
+            context, Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
 
-        try {
-            enabled = lm.isProviderEnabled(name)
-        } catch (t: Throwable) {
-            error = "isProviderEnabled 失败: ${t.message}"
-        }
-        try {
-            last = lm.getLastKnownLocation(name)
-        } catch (t: Throwable) {
-            error = listOfNotNull(error, "getLastKnownLocation 失败: ${t.message}").joinToString("; ")
-        }
+        return TARGETS.map { name ->
+            var error: String? = null
+            var enabled = false
+            var last: Location? = null
 
-        ProviderProbe(
-            name = name,
-            registered = registeredNames.contains(name),
-            enabled = enabled,
-            error = error ?: registrationErrors[name],
-            lat = last?.latitude,
-            lon = last?.longitude,
-            isMock = last?.let { location ->
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    location.isMock
-                } else {
-                    @Suppress("DEPRECATION")
-                    location.isFromMockProvider
+            try {
+                enabled = lm.isProviderEnabled(name)
+            } catch (t: Throwable) {
+                error = "isProviderEnabled 失败: ${t.message}"
+            }
+
+            if (!hasPermission) {
+                error = listOfNotNull(error, "缺少定位权限，无法读回位置").joinToString("; ")
+            } else {
+                try {
+                    last = lm.getLastKnownLocation(name)
+                } catch (t: Throwable) {
+                    error = listOfNotNull(error, "getLastKnownLocation 失败: ${t.message}")
+                        .joinToString("; ")
                 }
-            },
-            ageMs = last?.let { (SystemClock.elapsedRealtimeNanos() - it.elapsedRealtimeNanos) / 1_000_000 }
-        )
+            }
+
+            ProviderProbe(
+                name = name,
+                registered = registeredNames.contains(name),
+                enabled = enabled,
+                error = error ?: registrationErrors[name],
+                lat = last?.latitude,
+                lon = last?.longitude,
+                isMock = last?.let { location ->
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        location.isMock
+                    } else {
+                        @Suppress("DEPRECATION")
+                        location.isFromMockProvider
+                    }
+                },
+                ageMs = last?.let {
+                    (SystemClock.elapsedRealtimeNanos() - it.elapsedRealtimeNanos) / 1_000_000
+                }
+            )
+        }
     }
 
     /** 注销所有测试 provider，位置恢复为真实定位。 */
