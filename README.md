@@ -209,15 +209,54 @@ base64 -w0 /home/orlando/dingwei/dingwei-release.jks
 
 ## 五、已知限制
 
-1. **系统会标记模拟定位**：写入的位置带 `isMock` 标记，银行类 App、部分游戏的反作弊
-   可以据此检测到模拟定位。**这不是本 App 能绕过的**——绕过需要 root / Xposed / 系统级注入。
-2. **部分 App 可能仍显示真实定位**：若某 App 使用自建定位 SDK 或做了多源交叉校验，
-   可能忽略系统位置。本 App 已同时模拟 `gps` / `network` / `fused` 三个 provider，
-   但个别机型上 `fused` 被 Google Play 服务占用而无法接管（此时 `gps`+`network` 仍会生效）。
-3. **OSM 地图在国内加载较慢**：瓦片来自 `tile.openstreetmap.org`，网络不畅时地图会空白，
+### 5.1 非 root 方案的能力边界（实测 + AOSP 源码确认）
+
+用 App 内置的「**自检 / 诊断**」卡片可以确认注入是否真的生效。实测报告（Android 12 / API 31）：
+
+```
+[gps]     已注册/启用 isMock=true 读回=30.575400, 104.063800 偏差=0m 年龄=689ms
+[network] 已注册/启用 isMock=true 读回=30.575400, 104.063800 偏差=0m 年龄=690ms
+[fused]   已注册/启用 isMock=true 读回=30.575400, 104.063800 偏差=0m 年龄=690ms
+```
+
+**系统确实把模拟坐标提供给了所有读取定位的 App**（连 `fused` 融合定位都是，偏差 0 米、
+延迟不到 1 秒）。因此「其他 App 仍显示真实位置」**不是注入失败**。
+
+根因是那个 `isMock=true`：**系统强制给每个模拟位置打上该标记，App 无法去除** ——
+AOSP `MockLocationProvider.setProviderLocation()` 的实现：
+
+```java
+public void setProviderLocation(Location l) {
+    Location location = new Location(l);
+    location.setIsFromMockProvider(true);   // 系统强制；App 传什么都会被覆盖
+    mLocation = location;
+    reportLocation(LocationResult.wrap(location).validate());
+}
+```
+
+于是结果分两类：
+
+| 目标 App 的行为 | 结果 |
+|---|---|
+| 不检查该标记（多数地图、GPS 测试工具） | ✅ 正常显示模拟位置 |
+| 主动检测并拒绝模拟位置（部分社交/打卡/金融/风控类） | ❌ 丢弃该位置，改用自带的 WiFi/基站定位或服务端定位 → 显示真实位置 |
+
+**这是非 root 方案的能力边界，不是本 App 的缺陷。** 若必须去掉该标记，只有：
+
+- root + LSPosed/Xposed 模块（hook 掉 `Location.isMock()` / `isFromMockProvider()`）；
+- 把 App 装进 `/system/priv-app`（系统级安装）；
+- 直接改 GNSS HAL。
+
+### 5.2 其他
+
+1. **部分 App 可能仍显示真实定位**：另有部分 App 根本不用系统定位（自带 WiFi/基站定位
+   或服务端定位），这类 App 也无法通过系统级模拟影响。
+   本 App 已同时模拟 `gps` / `network` / `fused` 三个 provider
+   （Android 12 实测三个都能成功接管，`fused` 不再被 Google 服务独占）。
+2. **OSM 地图在国内加载较慢**：瓦片来自 `tile.openstreetmap.org`，网络不畅时地图会空白，
    但不影响搜索定位与手动输入坐标。
-4. **在线搜索是公共服务**：`photon.komoot.io` 为免费服务，请勿高频调用。
-5. **请遵守各 App 的服务条款与当地法律**：模拟定位用于测试、隐私保护等正当用途；
+3. **在线搜索是公共服务**：`photon.komoot.io` 为免费服务，请勿高频调用。
+4. **请遵守各 App 的服务条款与当地法律**：模拟定位用于测试、隐私保护等正当用途；
    用于考勤作弊、游戏作弊等可能违反平台规则或法律，后果自负。
 
 ---
