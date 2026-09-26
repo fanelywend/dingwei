@@ -2,6 +2,8 @@ package com.dingwei.gpsmock.ui
 
 import android.app.AppOpsManager
 import android.app.Application
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -108,6 +110,7 @@ class MockViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun refreshDiagnostics() {
         val mode = engine.appOpsMode()
+        val (wifiConnected, mobileConnected) = networkState()
         val lastPushAt = MockState.lastPushAt.value
         val now = System.currentTimeMillis()
         diagnostics = DiagnosticsSnapshot(
@@ -123,8 +126,26 @@ class MockViewModel(application: Application) : AndroidViewModel(application) {
             lastPushAgeMs = if (lastPushAt > 0) now - lastPushAt else null,
             serviceRunning = MockState.running.value,
             probes = engine.probe(MockState.providers.value),
-            pushFailures = MockState.pushFailures.value
+            pushFailures = MockState.pushFailures.value,
+            wifiConnected = wifiConnected,
+            mobileConnected = mobileConnected
         )
+    }
+
+    /** 当前是否连着 WiFi / 移动数据（排查「一联网就失效」时需要）。 */
+    private fun networkState(): Pair<Boolean, Boolean> {
+        val cm = getApplication<Application>()
+            .getSystemService(ConnectivityManager::class.java) ?: return false to false
+        var wifi = false
+        var mobile = false
+        runCatching {
+            cm.allNetworks.forEach { network ->
+                val caps = cm.getNetworkCapabilities(network) ?: return@forEach
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) wifi = true
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) mobile = true
+            }
+        }
+        return wifi to mobile
     }
 
     /** 可复制发走的诊断报告文本。 */

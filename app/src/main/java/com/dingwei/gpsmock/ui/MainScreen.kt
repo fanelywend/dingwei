@@ -387,6 +387,11 @@ private fun DiagnosticsCard(
             )
             InfoRow("前台服务", if (snapshot.serviceRunning) "运行中" else "未运行")
             InfoRow(
+                "网络状态",
+                "WiFi=${if (snapshot.wifiConnected) "已连接" else "未连接"} · " +
+                    "移动数据=${if (snapshot.mobileConnected) "已连接" else "未连接"}"
+            )
+            InfoRow(
                 "最近写入",
                 when {
                     snapshot.lastPushAgeMs == null -> "从未写入"

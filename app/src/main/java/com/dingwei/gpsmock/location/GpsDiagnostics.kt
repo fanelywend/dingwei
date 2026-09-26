@@ -75,7 +75,10 @@ data class DiagnosticsSnapshot(
     val lastPushAgeMs: Long?,
     val serviceRunning: Boolean,
     val probes: List<ProviderProbe>,
-    val pushFailures: Map<String, String>
+    val pushFailures: Map<String, String>,
+    /** 采集时的网络状态——排查「一联网就失效」时必须知道当时是否联网 */
+    val wifiConnected: Boolean = false,
+    val mobileConnected: Boolean = false
 ) {
     val verdict: InjectionVerdict
         get() {
@@ -139,6 +142,10 @@ object GpsDiagnostics {
         appendLine("包名: ${s.packageName}")
         appendLine("模拟位置应用授权: ${if (s.isMockAppSelected) "是" else "否"} (AppOps=${s.appOpsModeName})")
         appendLine("前台服务: ${if (s.serviceRunning) "运行中" else "未运行"}")
+        appendLine(
+            "网络状态: WiFi=${if (s.wifiConnected) "已连接" else "未连接"} " +
+                "移动数据=${if (s.mobileConnected) "已连接" else "未连接"}"
+        )
         appendLine("最近一次推送: ${if (s.lastPushAgeMs == null) "从未" else "${formatAge(s.lastPushAgeMs)}前"}")
         appendLine("目标坐标: %.6f, %.6f".format(s.targetLat, s.targetLon))
         appendLine()
