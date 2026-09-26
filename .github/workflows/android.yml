@@ -33,29 +33,38 @@ jobs:
 
     steps:
       - name: 检出代码
+        id: checkout
         uses: actions/checkout@v4
 
       - name: 安装 JDK 17
+        id: java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
       - name: 准备 Android SDK
+        id: sdk
         uses: android-actions/setup-android@v3
 
       - name: 配置 Gradle（含依赖缓存）
+        id: gradle
         uses: gradle/actions/setup-gradle@v4
 
       - name: 环境诊断
+        id: diag
         run: |
-          set -x
-          java -version
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          ls "$ANDROID_HOME/platforms" 2>/dev/null || true
-          ls "$ANDROID_HOME/build-tools" 2>/dev/null || true
-          ./gradlew --version
+          {
+            set -x
+            java -version
+            echo "ANDROID_HOME=$ANDROID_HOME"
+            echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+            ls "$ANDROID_HOME/platforms" 2>/dev/null || true
+            ls "$ANDROID_HOME/build-tools" 2>/dev/null || true
+            cat gradle/wrapper/gradle-wrapper.properties
+            ./gradlew --version
+          } 2>&1 | tee -a "$BUILD_LOG"
+          exit "${PIPESTATUS[0]}"
 
       # 把 keystore 以 base64 存进仓库 Secret，避免把签名密钥提交进仓库。
       # 需要 4 个 Secret：KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD
@@ -83,16 +92,19 @@ jobs:
           echo "本次仍会产出可直接安装的 debug APK。"
 
       - name: 单元测试
+        id: test
         run: |
           set -o pipefail
           ./gradlew testDebugUnitTest --stacktrace 2>&1 | tee -a "$BUILD_LOG"
 
       - name: Lint 检查
+        id: lint
         run: |
           set -o pipefail
           ./gradlew lintDebug --stacktrace 2>&1 | tee -a "$BUILD_LOG"
 
       - name: 构建 APK
+        id: assemble
         run: |
           set -o pipefail
           ./gradlew assembleDebug assembleRelease --stacktrace 2>&1 | tee -a "$BUILD_LOG"
@@ -127,6 +139,18 @@ jobs:
             echo
             echo "- 提交：\`$GITHUB_SHA\`"
             echo "- 运行：$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo
+            echo "## 各步骤结果（failure 即失败的那一步）"
+            echo '```'
+            echo "检出代码        : ${{ steps.checkout.outcome }}"
+            echo "安装 JDK 17     : ${{ steps.java.outcome }}"
+            echo "准备 Android SDK: ${{ steps.sdk.outcome }}"
+            echo "配置 Gradle     : ${{ steps.gradle.outcome }}"
+            echo "环境诊断        : ${{ steps.diag.outcome }}"
+            echo "单元测试        : ${{ steps.test.outcome }}"
+            echo "Lint 检查       : ${{ steps.lint.outcome }}"
+            echo "构建 APK        : ${{ steps.assemble.outcome }}"
+            echo '```'
             echo
             echo "## 环境"
             echo '```'
