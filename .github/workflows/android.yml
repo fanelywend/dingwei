@@ -43,10 +43,9 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: 准备 Android SDK
-        id: sdk
-        uses: android-actions/setup-android@v3
-
+      # 不再使用 android-actions/setup-android：GitHub 的 ubuntu runner 镜像已自带
+      # Android SDK（ANDROID_HOME=/usr/local/lib/android/sdk），该 action 反而会失败。
+      # 缺失的 platform / build-tools 由 AGP 在构建时自动补齐（镜像已接受 SDK 许可）。
       - name: 配置 Gradle（含依赖缓存）
         id: gradle
         uses: gradle/actions/setup-gradle@v4
@@ -144,7 +143,6 @@ jobs:
             echo '```'
             echo "检出代码        : ${{ steps.checkout.outcome }}"
             echo "安装 JDK 17     : ${{ steps.java.outcome }}"
-            echo "准备 Android SDK: ${{ steps.sdk.outcome }}"
             echo "配置 Gradle     : ${{ steps.gradle.outcome }}"
             echo "环境诊断        : ${{ steps.diag.outcome }}"
             echo "单元测试        : ${{ steps.test.outcome }}"
